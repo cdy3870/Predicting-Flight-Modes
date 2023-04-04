@@ -138,13 +138,16 @@ def extract_dfs(mUAV, table_name, feat_name):
 	return df
 
 def generate_data(feats):
-	# ids = get_filtered_ids()
-	with open("../../../../UAV_ML/full_parsed_7_multi.txt", "rb") as f:
-		full_parsed_split = dp.split_features(pickle.load(f))
-		temp_ids = list(full_parsed_split.keys())
+	
+	# with open("../../../../UAV_ML/full_parsed_7_multi.txt", "rb") as f:
+	# 	full_parsed_split = dp.split_features(pickle.load(f))
+	# 	temp_ids = list(full_parsed_split.keys())
+	# ids = [u for u in temp_ids if indexable_meta[u]["type"] == "Quadrotor"]
+	# print(f"subset size: {len(ids)}")
 
-	ids = [u for u in temp_ids if indexable_meta[u]["type"] == "Quadrotor"]
-	print(len(ids))
+	ids = get_filtered_ids()
+	ids = [u for u in ids if indexable_meta[u]["type"] == "Quadrotor"]
+	print(f"full size: {len(ids)}")
 
 	X = []
 	y = []
@@ -155,11 +158,16 @@ def generate_data(feats):
 	path = ulog_folder
 
 	for i, id in enumerate(ids):
+
+		try:
+			mUAV = uav.UAV(id, path)
+		except:
+			continue
+
 		print(f"Log {i}/{len(ids)}")
 		print(f"Success count: {success_count}")
 		print(id)
 
-		mUAV = uav.UAV(id, path)
 		mapped_X[id] = {}
 
 		modes = []
@@ -329,6 +337,13 @@ def preprocess_data(mapped_X, mapped_y, feats, equal_dist=False, chunking=False)
 
 	if equal_dist:
 		X, y_list = get_equal_distribution(X, y_list)
+		# with open("new_mapping_X_equal.txt", "wb") as f:
+		# 	pickle.dump(X, f)
+
+		# with open("new_mapping_y_equal.txt", "wb") as f:
+		# 	pickle.dump(y_list, f)	
+		
+		# return	
 
 	if chunking:
 		X, ids_intervals, y_list = dp.get_x_min_chunks(X, y)
@@ -336,13 +351,8 @@ def preprocess_data(mapped_X, mapped_y, feats, equal_dist=False, chunking=False)
 	# X = {k: X[k] for k in list(X)[:100]}
 
 	new_X = dp.timestamp_bin(X)
-	# new_X = dp.timestamp_bin_local(X)
-
-	print(np.array(new_X).shape)
 
 	new_y, new_mapping = remap_y(y_list)
-
-	print(np.array(new_y).shape)
 
 	return new_X, new_y, new_mapping
 
@@ -382,69 +392,47 @@ def main():
 	         "vehicle_local_position | z"]
 
 	# Generate mapped data
-	# mapped_X, mapped_y = generate_data(feats)
+	mapped_X, mapped_y = generate_data(feats)
 
-	# with open("new_mapped_X_xyz.txt", "wb") as f:
-	# 	pickle.dump(mapped_X, f)
+	with open("new_mapped_X_xyz_extra.txt", "wb") as f:
+		pickle.dump(mapped_X, f)
 
-	# with open("new_mapped_y_xyz.txt", "wb") as f:
-	# 	pickle.dump(mapped_y, f)
+	with open("new_mapped_y_xyz_extra.txt", "wb") as f:
+		pickle.dump(mapped_y, f)
 
 
 
 	# Preprocessing mapped data
-	with open("new_mapped_X_xyz.txt", "rb") as f:
+	with open("new_mapped_X_xyz_extra.txt", "rb") as f:
 		mapped_X = pickle.load(f)
 
-	with open("new_mapped_y_xyz.txt", "rb") as f:
+	with open("new_mapped_y_xyz_extra.txt", "rb") as f:
 		mapped_y = pickle.load(f)
 
 	new_X, new_y, new_mapping = preprocess_data(mapped_X, mapped_y, feats)
 
-	with open("X_data_xyz.txt", "wb") as f:
+	with open("X_data_xyz_extra.txt", "wb") as f:
 		pickle.dump(new_X, f)
 
-	with open("y_data_xyz.txt", "wb") as f:
+	with open("y_data_xyz_extra.txt", "wb") as f:
 		pickle.dump(new_y, f)
 
+	with open("mapping_xyz_extra.txt", "wb") as f:
+		pickle.dump(new_mapping, f)
 
+	# Getting smaller dataset for analysis
+	# feats = ["vehicle_local_position | x", "vehicle_local_position | y",
+	#          "vehicle_local_position | z", "vehicle_attitude_setpoint | roll_body",
+	#          "vehicle_attitude_setpoint | pitch_body", "vehicle_attitude_setpoint | yaw_body",
+	#          "manual_control_setpoint | z", "vehicle_gps_position | alt", "battery_status | temperature"]
+	# with open("new_mapped_X.txt", "rb") as f:
+	# 	mapped_X = pickle.load(f)
 
+	# with open("new_mapped_y.txt", "rb") as f:
+	# 	mapped_y = pickle.load(f)
 
+	# new_X, new_y, new_mapping = preprocess_data(mapped_X, mapped_y, feats, equal_dist=True)
 
-
-
-
-
-	# sample_id = "b6bf05ef-15b7-4eb5-b94b-96a0f95c3730"
-	# mUAV = uav.UAV(sample_id, ulog_folder)
-
-	# map_temp = {sample_id:{}}
-	# map_temp_y = {sample_id:{}}
-
-	# feat = feats[0]
-	# strings = feat.split(" ")
-	# table_name = strings[0]
-	# feat_name = strings[2]
-	# df_1 = extract_dfs(mUAV, table_name, feat_name)
-	# log_X, log_y = split_data(df_1, feat_name)
-
-	# map_temp[sample_id][feat] = log_X
-
-	# print(len(map_temp[sample_id][feat]))
-
-	# feat = feats[5]
-	# strings = feat.split(" ")
-	# table_name = strings[0]
-	# feat_name = strings[2]
-	# df_2 = extract_dfs(mUAV, table_name, feat_name)
-	# log_X, log_y = split_data(df_2, feat_name)
-
-	# map_temp[sample_id][feat] = log_X
-	# map_temp_y[sample_id][feat] = log_y
-
-
-	# print(len(map_temp[sample_id][feat]))
-	# print(map_temp_y[sample_id][feat])
 
 if __name__ == "__main__":
 	main()

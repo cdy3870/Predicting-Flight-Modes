@@ -462,6 +462,27 @@ def append_y_to_x(X_train, X_test, y_train, y_test):
 
 	return np.array(X_train), np.array(X_test)
 
+def get_sorted_rankings(feat_import, append=False):
+	sorted_import = feat_import.argsort()
+	temp =  [feat for feat in feats for i in range(50)]
+	if append:
+		temp.append("appended class")					
+	features_sorted = np.array(temp)[sorted_import]
+
+	avg_rankings = {}
+	for i, feat in enumerate(features_sorted.tolist()):
+		if feat in avg_rankings:
+			avg_rankings[feat] += i
+		else:
+			avg_rankings[feat] = i
+
+	avg_rankings = {key:value/50 for key, value in avg_rankings.items()}
+	sorted_avg_rankings = dict(sorted(avg_rankings.items(), key=lambda x : x[1]))
+	sorted_avg_rankings_ls = [(key, value) for key, value in sorted_avg_rankings.items()]
+
+	return sorted_avg_rankings_ls
+
+
 def main():   
 	# X, y = fmp.preprocess_data()
 
@@ -511,19 +532,22 @@ def main():
 			with open("y_data_chunked.txt", "rb") as f:
 				y_subcat = pickle.load(f)
 		else:
-			with open("X_data.txt", "rb") as f:
+			with open("X_data_xyz_extra.txt", "rb") as f:
 				X = pickle.load(f)
-			with open("y_data.txt", "rb") as f:
+			with open("y_data_xyz_extra.txt", "rb") as f:
 				y_subcat = pickle.load(f)
 
 
 
-		with open("mapping.txt", "rb") as f:
+		with open("mapping_xyz_extra.txt", "rb") as f:
 			mapping = pickle.load(f)
+
+		print(mapping)
 
 	print(np.array(X).shape)
 	print("------------------------------------ Parameters ------------------------------------")
-	print("Description: " + args.description)
+	description = f"Description: {args.description}, {args.model}"
+	print(description)
 
 
 	if args.target == "category":
@@ -560,7 +584,7 @@ def main():
 		with open(file_name, 'a', newline='') as csvfile:
 			csv_writer = csv.writer(csvfile)
 			csv_writer.writerow(["\n"])            
-			csv_writer.writerow([f"Description: {args.description}, {args.model}"])
+			csv_writer.writerow([description])
 
 	for train_index, test_index in splits:
 		print("------------------------------------ " + "Fold: " + str(fold) + " ------------------------------------")
@@ -588,24 +612,36 @@ def main():
 			if args.target == "category":
 				X_train, X_test = fmp.standardize_data(X_train, X_test)
 				cat_data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}				
-				counts, macro_f1, counts, report, conf_mat, _, y_pred = apply_concat_models(classes, cat_data, model_name=args.model)
+				counts, macro_f1, counts, report, conf_mat, feat_import, y_pred = apply_concat_models(classes, cat_data, model_name=args.model)
+
 				predictions_mapping.update(dict(zip(test_index, y_pred)))
 				with open("predictions_mapping.txt", "wb") as f:
 					pickle.dump(predictions_mapping, f)
+
+				# predictions_mapping.update(dict(zip(test_index, y_test)))
+				# with open("predictions_mapping_true.txt", "wb") as f:
+				# 	pickle.dump(predictions_mapping, f)
 
 			elif args.target == "subcategory":
 				with open("predictions_mapping.txt", "rb") as f:
 					predictions_mapping = pickle.load(f)
 
+				# with open("predictions_mapping_true.txt", "rb") as f:
+				# 	predictions_mapping = pickle.load(f)
+
 				X_train, X_test = fmp.standardize_data(X_train, X_test)
 				y_pred_test = [predictions_mapping[ind] for ind in test_index]
-				y_pred_train = [predictions_mapping[ind] for ind in train_index]					
+				y_pred_train = [predictions_mapping[ind] for ind in train_index]
+
 				X_train, X_test = append_y_to_x(X_train, X_test, y_pred_train, y_pred_test)
 				
 				print(X_train.shape)
 				print(y_train.shape)
 				subcat_data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}
-				preds = apply_concat_models(classes, subcat_data, model_name=args.model, reshape=False)
+				counts, macro_f1, counts, report, conf_mat, feat_import, y_pred = apply_concat_models(classes, subcat_data, model_name=args.model, reshape=False)
+				
+				if args.model in ["RFC", "XGBC"]:
+					sorted_avg_rankings_ls = get_sorted_rankings(feat_import, append=True)
 		else:
 			X_train, X_test = fmp.standardize_data(X_train, X_test)
 			data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}	
@@ -620,18 +656,9 @@ def main():
 
 			else:
 				counts, macro_f1, counts, report, conf_mat, feat_import, _ = apply_concat_models(classes, data, model_name=args.model, reshape=reshape)
-				sorted_import = feat_import.argsort()
-				features_sorted = np.array([feat for feat in feats for i in range(50)])[sorted_import]
-				avg_rankings = {}
-				for i, feat in enumerate(features_sorted.tolist()):
-					if feat in avg_rankings:
-						avg_rankings[feat] += i
-					else:
-						avg_rankings[feat] = i
-
-				avg_rankings = {key:value/50 for key, value in avg_rankings.items()}
-				sorted_avg_rankings = dict(sorted(avg_rankings.items(), key=lambda x : x[1]))
-				sorted_avg_rankings_ls = [(key, value) for key, value in sorted_avg_rankings.items()]
+				
+				if args.model in ["RFC", "XGBC"]:
+					sorted_avg_rankings_ls = get_sorted_rankings(feat_import, append=args.append)
 
 
 
@@ -652,10 +679,11 @@ def main():
 				csv_writer.writerow(["Macro F1 Score", round(macro_f1, 4)])
 				csv_writer.writerow(["True Counts"] + [round(report[c]["support"], 4) for c in classes])
 				csv_writer.writerow(["Pred Counts"] + [counts[i] for i, c in enumerate(classes)])
-				
-				csv_writer.writerow(["\n"])
-				csv_writer.writerow(["Feature"] + list(list(zip(*sorted_avg_rankings_ls))[0]))
-				csv_writer.writerow(["Average Ranking"] + list(list(zip(*sorted_avg_rankings_ls))[1]))
+
+				if args.model in ["RFC", "XGBC"]:
+					csv_writer.writerow(["\n"])
+					csv_writer.writerow(["Feature"] + list(list(zip(*sorted_avg_rankings_ls))[0]))
+					csv_writer.writerow(["Average Ranking"] + list(list(zip(*sorted_avg_rankings_ls))[1]))
 
 				csv_writer.writerow(["\n"])
 				csv_writer.writerow([""] + [c for c in classes])  
