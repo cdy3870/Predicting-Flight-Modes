@@ -20,11 +20,16 @@ import csv
 import random
 import numpy as np
 import flight_mode_preprocess as fmp
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 # Classical models
 from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
+from sklearn.ensemble import VotingClassifier
+from lightgbm import LGBMClassifier
 
 # Seed
 seed = 123
@@ -36,6 +41,9 @@ random.seed(seed)
 torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True
 
+import torchvision
+from torchvision import transforms
+import torch.nn.functional as F
 
 
 feats = ["vehicle_local_position | x", "vehicle_local_position | y",
@@ -152,21 +160,55 @@ def reshape_data(X_train, X_test):
 
 	return X_train, X_test
 
-def apply_concat_models(classes, data, model_name="SVM", verbose=True, reshape=True):
+def dim_reduce_data(X_train, X_test, dim_reduce):
+	model = PCA(n_components=dim_reduce, svd_solver='arpack').fit(X_train)
+	# model = TSNE(n_components=dim_reduce).fit(X_train)
+
+
+	X_train = model.transform(X_train)
+	X_test = model.transform(X_test)
+
+	print(X_train.shape)
+	print(X_test.shape)
+
+	return X_train, X_test
+
+def apply_concat_models(classes, data, model_name="SVM", verbose=True, reshape=True, dim_reduce=None, adjust_with_prob=False):
 	if reshape:
 		X_train, X_test = reshape_data(data["X_train"], data["X_test"])
 	else:
 		X_train, X_test = data["X_train"], data["X_test"]
 
+	if dim_reduce:
+		X_train, X_test = dim_reduce_data(X_train, X_test, dim_reduce)
+
 	if model_name == "SVM":
+		# model = SVC(probability=True)
 		model = SVC()
 	elif model_name == "RFC":
 		model = RandomForestClassifier()
 	elif model_name == "XGBC":
-		model = XGBClassifier()
+		model = XGBClassifier(n_estimators=200)
+	elif model_name == "GBC":
+		model = GradientBoostingClassifier()
+	elif model_name == "NN":
+		model = MLPClassifier()
+	elif model_name == "VOTE":
+		# model = VotingClassifier(estimators=[('xgb',  XGBClassifier()),
+		# 									 ('rf', RandomForestClassifier()),
+		# 									 ('gb', GradientBoostingClassifier())], voting='hard')
+		model = VotingClassifier(estimators=[('xgb',  XGBClassifier()),
+											 ('svm', SVC()),
+											 ('nn', MLPClassifier())], voting='hard')
+	elif model_name == "LGBM":
+		model = LGBMClassifier()
 
 	model = model.fit(X_train, data["y_train"])
 	y_pred = model.predict(X_test)		
+
+
+	
+
 	counts = Counter(y_pred)
 	report = classification_report(data["y_test"], y_pred, target_names=classes, output_dict=True)
 	macro_f1 = f1_score(data["y_test"], y_pred, average='macro')
@@ -181,6 +223,11 @@ def apply_concat_models(classes, data, model_name="SVM", verbose=True, reshape=T
 	if model_name in ["RFC", "XGBC"]:
 		return counts, macro_f1, counts, report, conf_mat, model.feature_importances_, y_pred
 
+	if adjust_with_prob:
+		y_pred_prob = model.predict_proba(X_test)
+		probs = y_pred_prob[:, y_pred]
+		adjusted_pred = probs * y_pred
+		y_pred = adjusted_pred
 
 	return counts, macro_f1, counts, report, conf_mat, [], y_pred
 
@@ -228,13 +275,37 @@ class LSTM(nn.Module):
 		# print(out.shape)
 		return out
 
-def get_model(input_size, hidden_size = 128, num_classes=2, num_layers=1):
+def get_model_lstm(input_size, hidden_size = 128, num_classes=2, num_layers=1):
 	hidden_size = 128
 	num_layers = 1
 	model = LSTM(input_size=input_size,
 				 hidden_size=hidden_size,
 				 num_classes=num_classes,
 				num_layers=num_layers)
+
+	return model
+
+##### CNN #####
+
+class CNN(nn.Module):
+	def __init__(self, num_classes):
+		super().__init__()
+		self.conv1 = nn.Conv2d(1, 6, 5)
+		self.pool = nn.MaxPool2d(2, 2)
+		self.conv2 = nn.Conv2d(6, 16, 2)
+		self.fc1 = nn.Linear(352, 120)
+		self.fc2 = nn.Linear(120, num_classes)
+
+	def forward(self, x):
+		x = self.pool(F.relu(self.conv1(x)))
+		x = F.relu(self.conv2(x))
+		x = torch.flatten(x, 1)
+		x = F.relu(self.fc1(x))
+		x = self.fc2(x)
+		return x
+
+def get_model_cnn(num_classes):
+	model = CNN(num_classes)
 
 	return model
 
@@ -277,6 +348,7 @@ def apply_NNs(classes, model, train_loader, test_loader, params, verbose=True, t
 			for (_, data) in enumerate(data_loader):
 				optimizer.zero_grad()
 				inputs = data[0].to(device)
+				# print(inputs.shape)
 				targets = data[1]
 				# print(targets)
 				targets = targets.to(device)
@@ -388,64 +460,85 @@ def train_two_part(classes, model, train_loader, test_loader, params, cat_subcat
 
 
 
+# def modify_for_folds(X, y, mapping, classes, n_folds=5):
+# 	new_X = []
+# 	new_y = []
+# 	removed_classes = set()
 
+# 	counts = Counter(y)
+# 	modified_counts = {key:value for key, value in dict(counts).items() if value >= n_folds}
+# 	viable_keys = list(modified_counts.keys())
 
+# 	for i, y in enumerate(y):
+# 		if y in viable_keys:
+# 			new_X.append(X[i])
+# 			new_y.append(y)
+# 		else:
+# 			removed_classes.add(y)
 
-def modify_for_folds(X, y, mapping, classes, n_folds=5):
+# 	new_classes = [mapped_subcat[mapping[i]] for i in range(len(mapping)) if i not in removed_classes]
+
+# 	return new_X, new_y, new_classes
+
+def create_other_class(X, y, mapping, classes, n_samples=500, drop_other=False):
 	new_X = []
 	new_y = []
-	removed_classes = set()
-
-	counts = Counter(y)
-	modified_counts = {key:value for key, value in dict(counts).items() if value >= n_folds}
-	viable_keys = list(modified_counts.keys())
-
-	for i, y in enumerate(y):
-		if y in viable_keys:
-			new_X.append(X[i])
-			new_y.append(y)
-		else:
-			removed_classes.add(y)
-
-	print(removed_classes)
-
-	new_classes = [mapped_subcat[mapping[i]] for i in range(len(mapping)) if i not in removed_classes]
-	print(new_classes)
-
-	return new_X, new_y, new_classes
-
-def create_other_class(X, y, mapping, classes, n_samples=500):
-	new_X = []
-	new_y = []
-	removed_classes = set()
-
+	kept_indices = []
+	other_indices = []
 	counts = Counter(y)
 
-	print(counts)
 	modified_counts = {key:value for key, value in dict(counts).items() if value >= n_samples}
 	viable_keys = list(modified_counts.keys())
 
 	for i, y in enumerate(y):
 		if y not in viable_keys:
-			new_y.append(len(viable_keys))
+			if not drop_other:
+				# Keep those not in threshold but rename to other class
+				new_y.append(len(viable_keys))
+				new_X.append(X[i])
+			other_indices.append(i)
 		else:
 			new_y.append(y)
-
-		new_X.append(X[i])
-
-
-	# print(removed_classes)
+			new_X.append(X[i])
+			kept_indices.append(i)
 
 	new_counts = list(Counter(new_y))
 
-	print(new_counts)
+	if not drop_other:
+		new_classes = [mapped_subcat[mapping[i]] for i in range(len(new_counts) - 1)]
+		new_classes.append("other")
+		return new_X, new_y, new_classes, []
 
-	new_classes = [mapped_subcat[mapping[i]] for i in range(len(new_counts) - 1) if i not in removed_classes]
-	new_classes.append("other")
+	new_classes = [mapped_subcat[mapping[i]] for i in range(len(new_counts))]
+
+
+	return new_X, new_y, new_classes, kept_indices
+
+
+def get_only_other(X, y, mapping, n_samples=500):
+	new_X = []
+	new_y = []
+	other_indices = []
+	counts = Counter(y)
+	non_other_count = 5
+
+	modified_counts = {key:value for key, value in dict(counts).items() if value >= n_samples}
+	total_classes = len(counts)
+	viable_keys = list(modified_counts.keys())
+
+	for i, y in enumerate(y):
+		if y not in viable_keys:
+			new_y.append(y)
+			new_X.append(X[i])
+
+	print(Counter(new_y))
+
+	indices = [non_other_count + i for i in range(len(counts) - len(viable_keys))]
+	new_classes = [mapped_subcat[mapping[i]] for i in indices]
+
 	print(new_classes)
 
 	return new_X, new_y, new_classes
-
 
 def append_y_to_x(X_train, X_test, y_train, y_test):
 	X_train, X_test = reshape_data(X_train, X_test)
@@ -457,8 +550,6 @@ def append_y_to_x(X_train, X_test, y_train, y_test):
 
 	for x, y in zip(X_test, y_test):
 		x.append(y)
-
-	# print(X_train[0])
 
 	return np.array(X_train), np.array(X_test)
 
@@ -482,29 +573,75 @@ def get_sorted_rankings(feat_import, append=False):
 
 	return sorted_avg_rankings_ls
 
+def test_append(target, mapping, data, train_index, test_index):
+	reshape = False
+	if target == "subcategory":
+		y_cat_train = fmp.to_category([mapping[i] for i in data["y_train"]])
+		y_cat_test = fmp.to_category([mapping[i] for i in data["y_test"]])
+		X_train, X_test = append_y_to_x(data["X_train"], data["X_test"], y_cat_train, y_cat_test)
+	elif target == "category":
+		y_subcat_train = np.array(y_subcat)[train_index]
+		y_subcat_test = np.array(y_subcat)[test_index]
+		X_train, X_test = append_y_to_x(data["X_train"], data["X_test"], y_subcat_train, y_subcat_test)
+
+def test_two_part(target, model, data):
+	if target == "category":
+		X_train, X_test = fmp.standardize_data(data["X_train"], data["X_test"])
+		cat_data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}				
+		counts, macro_f1, counts, report, conf_mat, feat_import, y_pred = apply_concat_models(classes, cat_data, model_name=model)
+
+		predictions_mapping_pred.update(dict(zip(test_index, y_pred)))
+		with open("predictions_mapping.txt", "wb") as f:
+			pickle.dump(predictions_mapping_pred, f)
+
+		# predictions_mapping_true.update(dict(zip(test_index, y_test)))
+		# with open("predictions_mapping_true.txt", "wb") as f:
+		# 	pickle.dump(predictions_mapping_true, f)
+
+	elif target == "subcategory":
+		with open("predictions_mapping.txt", "rb") as f:
+			predictions_mapping = pickle.load(f)
+
+		# with open("predictions_mapping_true.txt", "rb") as f:
+		# 	predictions_mapping = pickle.load(f)
+
+		X_train, X_test = fmp.standardize_data(data["X_train"], data["X_test"])
+
+
+		y_pred_test = [predictions_mapping[ind] for ind in test_index]
+		y_pred_train = [predictions_mapping[ind] for ind in train_index]
+
+		X_train, X_test = append_y_to_x(data["X_train"], data["X_test"], y_pred_train, y_pred_test)
+
+		subcat_data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}
+		counts, macro_f1, counts, report, conf_mat, feat_import, y_pred = apply_concat_models(classes, subcat_data, model_name=model, reshape=False)
+		
+		# if args.model in ["RFC", "XGBC"]:
+		# 	sorted_avg_rankings_ls = get_sorted_rankings(feat_import, append=True)
+
+	return counts, macro_f1, counts, report, conf_mat, feat_import, y_pred
 
 def main():   
-	# X, y = fmp.preprocess_data()
-
-	# with open("X_data.txt", "rb") as f:
-	# 	asdf = pickle.load(f)
-
-	# print(len(asdf))
-
-
-
-
 	parser = argparse.ArgumentParser()
 	parser.add_argument("-k", "--n_folds", type=int, help="number of folds in k-fold cross validation", default=5)
 	parser.add_argument("-l", "--learning_rate", type=float, help="learning rate", default=0.001)
 	parser.add_argument("-e", "--n_epochs", type=int, help="number of epochs (divisible by 4)", default=100)
+	parser.add_argument("-nl", "--n_layers", type=int, help="number of layers in LSTM", default=1)
 	parser.add_argument('-csv','--csv', type=str, help='csv file name output')
 	parser.add_argument("-d", "--description", type=str, help="description of experiment", required=True)
 	parser.add_argument("-t", "--target", type=str, help="subcategory or category", required=True)
 	parser.add_argument("-m", "--model", type=str, help="model (LSTM, SVM, RFC, XGBC)", default="LSTM")
+	parser.add_argument("-r", "--reduce", type=int, help="dimension reduction amount", default=None)
+	parser.add_argument('-in', "--indices", nargs="+", type=int, default=None)
+
+	parser.add_argument("-x", "--x_data", type=str, help="x data file")	
+	parser.add_argument("-y", "--y_data", type=str, help="y data file")	
+	parser.add_argument("-ma", "--mapping", type=str, help="mapped labels file")	
+	parser.add_argument("-do", "--drop_other", action='store_true', help="drop other class", default=False)
+	parser.add_argument("-oo", "--only_other", action='store_true', help="test other class", default=False)
 
 	parser.add_argument("-eq", "--equal", action='store_true', help="equal distribution")
-	parser.add_argument("-ch", "--chunked", action='store_true', help="chunked data")
+	# parser.add_argument("-ch", "--chunked", action='store_true', help="chunked data")
 	parser.add_argument("-ap", "--append", action='store_true', help="append category or subcategory", default=False)
 	
 	parser.add_argument("-tw", "--twopart", action='store_true', help="if two part model is used", default=False)
@@ -512,6 +649,8 @@ def main():
 
 
 	args = parser.parse_args()
+
+
 
 
 	if args.equal:
@@ -525,26 +664,15 @@ def main():
 			mapping = pickle.load(f)
 
 	else:
-		if args.chunked:
-			with open("X_data_chunked.txt", "rb") as f:
-				X = pickle.load(f)
-
-			with open("y_data_chunked.txt", "rb") as f:
-				y_subcat = pickle.load(f)
-		else:
-			with open("X_data_xyz_extra.txt", "rb") as f:
-				X = pickle.load(f)
-			with open("y_data_xyz_extra.txt", "rb") as f:
-				y_subcat = pickle.load(f)
-
-
-
-		with open("mapping_xyz_extra.txt", "rb") as f:
+		with open(args.x_data, "rb") as f:
+			X = pickle.load(f)
+		with open(args.y_data, "rb") as f:
+			y_subcat = pickle.load(f)
+		with open(args.mapping, "rb") as f:
 			mapping = pickle.load(f)
 
-		print(mapping)
 
-	print(np.array(X).shape)
+
 	print("------------------------------------ Parameters ------------------------------------")
 	description = f"Description: {args.description}, {args.model}"
 	print(description)
@@ -563,21 +691,11 @@ def main():
 	elif args.target == "subcategory":
 		y = y_subcat
 		classes = [mapped_subcat[mapping[i]] for i in range(len(mapping))]
-		X, y, classes = create_other_class(X, y, mapping, classes)
 
-	kf = StratifiedKFold(n_splits=args.n_folds)
-	splits = kf.split(X, y)
-	fold = 0
-	num_classes = len(Counter(y))
-	
-
-	report_stack = np.zeros((args.n_folds, 3, len(classes)))
-	# auc_stack = []
-	macro_f1_stack = []
-	total_conf_mat = np.zeros((len(classes), len(classes)))
-	predictions_mapping = {}
-	reshape = True
-
+		if args.only_other:
+			X, y, classes = get_only_other(X, y, mapping)
+		else:
+			X, y, classes, _ = create_other_class(X, y, mapping, classes, drop_other=args.drop_other)
 
 	if args.csv:
 		file_name = args.csv
@@ -586,154 +704,246 @@ def main():
 			csv_writer.writerow(["\n"])            
 			csv_writer.writerow([description])
 
-	for train_index, test_index in splits:
-		print("------------------------------------ " + "Fold: " + str(fold) + " ------------------------------------")
+	if args.indices:
+		X = np.array(X)[:, args.indices, :]
+		y = np.array(y)
+	else:
+		X = np.array(X)
+		y = np.array(y)
+		if args.drop_other and args.target == "category":
+			_, _, _, kept_indices = create_other_class(X, y_subcat, mapping,
+									[mapped_subcat[mapping[i]] for i in range(len(mapping))],
+									drop_other=args.drop_other)
+			X = X[kept_indices, :, :]
+			y = y[kept_indices]
+			classes = ["guided", "auto"]
 
-		X_train, X_test = np.array(X)[train_index], np.array(X)[test_index]
-		y_train, y_test = np.array(y)[train_index], np.array(y)[test_index]
-
-		# Appending
-		if args.append:
-			reshape = False
-			if args.target == "subcategory":
-				y_cat_train = fmp.to_category([mapping[i] for i in y_train])
-				y_cat_test = fmp.to_category([mapping[i] for i in y_test])
-				X_train, X_test = append_y_to_x(X_train, X_test, y_cat_train, y_cat_test)
-			elif args.target == "category":
-				y_subcat_train = np.array(y_subcat)[train_index]
-				y_subcat_test = np.array(y_subcat)[test_index]
-				X_train, X_test = append_y_to_x(X_train, X_test, y_subcat_train, y_subcat_test)
+	X = X[:300, :, :]
+	y = y[:300]
 
 
-		# TWO PART MODEL TEST
-		if args.twopart:
-			# counts, macro_f1, counts, report, conf_mat, feature_import = apply_concat_two_part(classes, cat_data, subcat_data, model=args.model)
-						
-			if args.target == "category":
-				X_train, X_test = fmp.standardize_data(X_train, X_test)
-				cat_data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}				
-				counts, macro_f1, counts, report, conf_mat, feat_import, y_pred = apply_concat_models(classes, cat_data, model_name=args.model)
+	if args.run_kfold:
+		fold = 0
+		report_stack = np.zeros((args.n_folds, 3, len(classes)))
+		# auc_stack = []
+		macro_f1_stack = []
+		total_conf_mat = np.zeros((len(classes), len(classes)))
+		predictions_mapping_pred = {}
+		predictions_mapping_true = {}
+		reshape = True
 
-				predictions_mapping.update(dict(zip(test_index, y_pred)))
-				with open("predictions_mapping.txt", "wb") as f:
-					pickle.dump(predictions_mapping, f)
+		kf = StratifiedKFold(n_splits=args.n_folds)
+		splits = kf.split(X, y)
+		num_classes = len(Counter(y.tolist()))
 
-				# predictions_mapping.update(dict(zip(test_index, y_test)))
-				# with open("predictions_mapping_true.txt", "wb") as f:
-				# 	pickle.dump(predictions_mapping, f)
+		for train_index, test_index in splits:
+			print("------------------------------------ " + "Fold: " + str(fold) + " ------------------------------------")
 
-			elif args.target == "subcategory":
-				with open("predictions_mapping.txt", "rb") as f:
-					predictions_mapping = pickle.load(f)
 
-				# with open("predictions_mapping_true.txt", "rb") as f:
-				# 	predictions_mapping = pickle.load(f)
+			X_train, X_test = X[train_index], X[test_index]
+			y_train, y_test = y[train_index], y[test_index]
 
-				X_train, X_test = fmp.standardize_data(X_train, X_test)
-				y_pred_test = [predictions_mapping[ind] for ind in test_index]
-				y_pred_train = [predictions_mapping[ind] for ind in train_index]
+			# Appending
+			if args.append:
+				data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}	
+				test_append(args.target, mapping, data, train_index, test_index)
 
-				X_train, X_test = append_y_to_x(X_train, X_test, y_pred_train, y_pred_test)
-				
-				print(X_train.shape)
-				print(y_train.shape)
-				subcat_data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}
-				counts, macro_f1, counts, report, conf_mat, feat_import, y_pred = apply_concat_models(classes, subcat_data, model_name=args.model, reshape=False)
-				
-				if args.model in ["RFC", "XGBC"]:
-					sorted_avg_rankings_ls = get_sorted_rankings(feat_import, append=True)
-		else:
-			X_train, X_test = fmp.standardize_data(X_train, X_test)
-			data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}	
-
-			if args.model in ["LSTM", "CNN"]:
-				train_loader, test_loader = get_dataloaders(data)
-				input_size = X_train.shape[2]
-				model = get_model(input_size, num_classes=num_classes)
-				params = {"lr": args.learning_rate, "num_epochs":args.n_epochs}
-				_, auc_score, macro_f1, counts, model, report, conf_mat = apply_NNs(classes, model, train_loader, test_loader, params)
-				# _, auc_score, macro_f1, counts, model, report, conf_mat = train_two_part(classes, model, train_loader, test_loader, params, cat_subcat[test_index])
+			# TWO PART MODEL TEST
+			if args.twopart:	
+				data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}						
+				test_two_part(arg.target, args.model, data, train_index, test_index)
 
 			else:
-				counts, macro_f1, counts, report, conf_mat, feat_import, _ = apply_concat_models(classes, data, model_name=args.model, reshape=reshape)
-				
-				if args.model in ["RFC", "XGBC"]:
-					sorted_avg_rankings_ls = get_sorted_rankings(feat_import, append=args.append)
+				X_train, X_test = fmp.standardize_data(X_train, X_test)
+				data = {"X_train": X_train, "X_test": X_test, "y_train": y_train, "y_test": y_test}	
+
+				if args.model in ["LSTM", "CNN"]:
+
+					if args.model == "CNN":
+						data["X_train"] = data["X_train"][:, None, :]
+						data["X_test"] = data["X_test"][:, None, :]
+
+					train_loader, test_loader = get_dataloaders(data)
+					input_size = X_train.shape[2]
+					params = {"lr": args.learning_rate, "num_epochs":args.n_epochs, "num_layers":args.n_layers}
+					if args.model == "LSTM":
+						model = get_model_lstm(input_size, num_classes=num_classes, num_layers=params["num_layers"])
+					else:
+						model = get_model_cnn(num_classes=num_classes)
+
+					_, auc_score, macro_f1, counts, model, report, conf_mat = apply_NNs(classes, model, train_loader, test_loader, params)
+					# _, auc_score, macro_f1, counts, model, report, conf_mat = train_two_part(classes, model, train_loader, test_loader, params, cat_subcat[test_index])
+
+				else:
+					counts, macro_f1, counts, report, conf_mat, feat_import, y_pred = apply_concat_models(classes, data, model_name=args.model, reshape=reshape, dim_reduce=args.reduce)
+					
+					predictions_mapping_pred.update(dict(zip(test_index, y_pred)))
+					predictions_mapping_true.update(dict(zip(test_index, y_test)))
+
+					# with open("predictions_mapping_pred_cat_orig.txt", "wb") as f:
+					# 	pickle.dump(predictions_mapping_pred, f)	
+
+					# with open("predictions_mapping_true_cat_orig.txt", "wb") as f:
+					# 	pickle.dump(predictions_mapping_true, f)
+
+
+					# if args.model in ["RFC", "XGBC"]:
+					# 	sorted_avg_rankings_ls = get_sorted_rankings(feat_import, append=args.append)
 
 
 
 
+
+
+			if args.csv:
+				file_name = args.csv
+				# with open(file_name, 'a', newline='') as csvfile:
+				# 	csv_writer = csv.writer(csvfile)
+				# 	csv_writer.writerow(["\n"])            
+				# 	csv_writer.writerow(["Fold : " + str(fold)])
+				# 	csv_writer.writerow([""] + [c for c in classes])
+				# 	csv_writer.writerow(["Precision"] + [round(report[c]["precision"], 4) for c in classes])
+				# 	csv_writer.writerow(["Recall"] + [round(report[c]["recall"], 4) for c in classes])
+				# 	csv_writer.writerow(["F-score"] + [round(report[c]["f1-score"], 4) for c in classes])
+				# 	csv_writer.writerow(["Macro F1 Score", round(macro_f1, 4)])
+				# 	csv_writer.writerow(["True Counts"] + [round(report[c]["support"], 4) for c in classes])
+				# 	csv_writer.writerow(["Pred Counts"] + [counts[i] for i, c in enumerate(classes)])
+
+				# 	# if args.model in ["RFC", "XGBC"]:
+				# 	# 	csv_writer.writerow(["\n"])
+				# 	# 	csv_writer.writerow(["Feature"] + list(list(zip(*sorted_avg_rankings_ls))[0]))
+				# 	# 	csv_writer.writerow(["Average Ranking"] + list(list(zip(*sorted_avg_rankings_ls))[1]))
+
+				# 	csv_writer.writerow(["\n"])
+				# 	csv_writer.writerow([""] + [c for c in classes])  
+				# 	for i in range(len(conf_mat)):	
+				# 		csv_writer.writerow([classes[i]] + conf_mat[i].tolist())
+
+				total_conf_mat = np.add(total_conf_mat, conf_mat)
+					
+
+				for i, metric in enumerate(["precision", "recall", "f1-score"]):
+					for j, c in enumerate(classes):
+						report_stack[fold][i][j] = report[c][metric]
+
+				# auc_stack.append(auc_score)
+				macro_f1_stack.append(macro_f1)
+
+			fold += 1
 
 
 		if args.csv:
-			file_name = args.csv
+			means = np.mean(report_stack, axis=0)
+			stds = np.std(report_stack, axis=0)
+			macro_mean = np.mean(macro_f1_stack)
+			macro_std = np.std(macro_f1_stack)
+			conf_mean = total_conf_mat/args.n_folds
+
+
 			with open(file_name, 'a', newline='') as csvfile:
 				csv_writer = csv.writer(csvfile)
-				csv_writer.writerow(["\n"])            
-				csv_writer.writerow(["Fold : " + str(fold)])
+				csv_writer.writerow(["\n"]) 
+				csv_writer.writerow(["Averages"])           
 				csv_writer.writerow([""] + [c for c in classes])
-				csv_writer.writerow(["Precision"] + [round(report[c]["precision"], 4) for c in classes])
-				csv_writer.writerow(["Recall"] + [round(report[c]["recall"], 4) for c in classes])
-				csv_writer.writerow(["F-score"] + [round(report[c]["f1-score"], 4) for c in classes])
-				# csv_writer.writerow(["AUROC Score", round(auc_score, 4)])
-				csv_writer.writerow(["Macro F1 Score", round(macro_f1, 4)])
-				csv_writer.writerow(["True Counts"] + [round(report[c]["support"], 4) for c in classes])
-				csv_writer.writerow(["Pred Counts"] + [counts[i] for i, c in enumerate(classes)])
+				csv_writer.writerow(["Precision"] + [round(means[0][i], 4) for i in range(num_classes)])
+				csv_writer.writerow(["Recall"] + [round(means[1][i], 4) for i in range(num_classes)])
+				csv_writer.writerow(["F-score"] + [round(means[2][i], 4) for i in range(num_classes)])
+				csv_writer.writerow(["Macro F1 Score", round(macro_mean, 4)])
 
-				if args.model in ["RFC", "XGBC"]:
-					csv_writer.writerow(["\n"])
-					csv_writer.writerow(["Feature"] + list(list(zip(*sorted_avg_rankings_ls))[0]))
-					csv_writer.writerow(["Average Ranking"] + list(list(zip(*sorted_avg_rankings_ls))[1]))
+				csv_writer.writerow(["\n"]) 
+				csv_writer.writerow(["Standard Deviations"])           
+				csv_writer.writerow([""] + [c for c in classes])
+				csv_writer.writerow(["Precision"] + [round(stds[0][i], 4) for i in range(num_classes)])
+				csv_writer.writerow(["Recall"] + [round(stds[1][i], 4) for i in range(num_classes)])
+				csv_writer.writerow(["F-score"] + [round(stds[2][i], 4) for i in range(num_classes)])
+				csv_writer.writerow(["Macro F1 Score", round(macro_std, 4)])
 
 				csv_writer.writerow(["\n"])
 				csv_writer.writerow([""] + [c for c in classes])  
 				for i in range(len(conf_mat)):	
-					csv_writer.writerow([classes[i]] + conf_mat[i].tolist())
+					csv_writer.writerow([classes[i]] + conf_mean[i].tolist())
 
-			total_conf_mat = np.add(total_conf_mat, conf_mat)
-				
-
-			for i, metric in enumerate(["precision", "recall", "f1-score"]):
-				for j, c in enumerate(classes):
-					report_stack[fold][i][j] = report[c][metric]
-
-			# auc_stack.append(auc_score)
-			macro_f1_stack.append(macro_f1)
-
-		fold += 1
+	else:
+		print("reached")
 
 
-	if args.csv:
-		means = np.mean(report_stack, axis=0)
-		stds = np.std(report_stack, axis=0)
-		macro_mean = np.mean(macro_f1_stack)
-		macro_std = np.std(macro_f1_stack)
-		conf_mean = total_conf_mat/args.n_folds
+
+##### Trying two part models from other papers
+
+def prep_data():
+	with open("../experiment_original/X_data.txt", "rb") as f:
+		X = pickle.load(f)
+	with open("../experiment_original/y_data.txt", "rb") as f:
+		y_subcat = pickle.load(f)
+	with open("../experiment_original/mapping.txt", "rb") as f:
+		mapping = pickle.load(f)
 
 
-		with open(file_name, 'a', newline='') as csvfile:
-			csv_writer = csv.writer(csvfile)
-			csv_writer.writerow(["\n"]) 
-			csv_writer.writerow(["Averages"])           
-			csv_writer.writerow([""] + [c for c in classes])
-			csv_writer.writerow(["Precision"] + [round(means[0][i], 4) for i in range(num_classes)])
-			csv_writer.writerow(["Recall"] + [round(means[1][i], 4) for i in range(num_classes)])
-			csv_writer.writerow(["F-score"] + [round(means[2][i], 4) for i in range(num_classes)])
-			csv_writer.writerow(["Macro F1 Score", round(macro_mean, 4)])
+	# Generate cat labels
+	y_cat = fmp.to_category([mapping[i] for i in y_subcat])
+	cat_subcat = [(y_c, y_s) for y_c, y_s in zip(y_cat, y_subcat)]
+	reversed_mapping = {value:key for key, value in mapped_label.items()}
+	cat_classes = [reversed_mapping[i] for i in list(Counter(y_cat).keys())]
 
-			csv_writer.writerow(["\n"]) 
-			csv_writer.writerow(["Standard Deviations"])           
-			csv_writer.writerow([""] + [c for c in classes])
-			csv_writer.writerow(["Precision"] + [round(stds[0][i], 4) for i in range(num_classes)])
-			csv_writer.writerow(["Recall"] + [round(stds[1][i], 4) for i in range(num_classes)])
-			csv_writer.writerow(["F-score"] + [round(stds[2][i], 4) for i in range(num_classes)])
-			csv_writer.writerow(["Macro F1 Score", round(macro_std, 4)])
+	# Generate subcat labels
+	classes = [mapped_subcat[mapping[i]] for i in range(len(mapping))]
+	_, y_subcat, subcat_classes = create_other_class(X, y_subcat, mapping, classes)
 
-			csv_writer.writerow(["\n"])
-			csv_writer.writerow([""] + [c for c in classes])  
-			for i in range(len(conf_mat)):	
-				csv_writer.writerow([classes[i]] + conf_mean[i].tolist())
+	# Get splits
+	indices = np.arange(len(X))
+	X_train, X_test, y_train_cat, y_test_cat, idx_train, idx_test = train_test_split(X, y_cat, indices, test_size=0.4)
+	X_train, X_test = fmp.standardize_data(np.array(X_train), np.array(X_test))
+
+	y_train_subcat = np.array(y_subcat)[idx_train]
+	y_test_subcat = np.array(y_subcat)[idx_test]
+
+	return X_train, X_test, y_train_cat, y_test_cat, y_train_subcat, y_test_subcat, cat_classes, subcat_classes
+
+def test_paper_2_approach():
+	X_train, X_test, y_train_cat, y_test_cat, y_train_subcat, y_test_subcat, cat_classes, subcat_classes = prep_data()
+	params = {"lr": 0.001, "num_epochs":10, "num_layers":1}
+	input_size = X_train.shape[2]
+
+	##### WITHOUT TECHNIQUE #####
+	data = {"X_train": X_train, "X_test": X_test, "y_train": y_train_subcat, "y_test": y_test_subcat}	
+	train_loader, test_loader = get_dataloaders(data)
+	model = get_model_lstm(input_size, num_classes=len(subcat_classes), num_layers=params["num_layers"])
+	_, auc_score, macro_f1, counts, model, report, conf_mat = apply_NNs(subcat_classes, model, train_loader, test_loader, params)
+
+
+	##### WITH TECHNIQUE #####
+	# 1.1 Obtain coarse labels
+	data = {"X_train": X_train, "X_test": X_test, "y_train": y_train_cat, "y_test": y_test_cat}	
+	train_loader, test_loader = get_dataloaders(data)
+
+	# 1.2 Obtain coarse model 
+	model = get_model_lstm(input_size, num_classes=len(cat_classes), num_layers=params["num_layers"])
+
+	# 1.3 Train with coarse labels
+	_, auc_score, macro_f1, counts, model, report, conf_mat = apply_NNs(cat_classes, model, train_loader, test_loader, params)
+
+	# 2.1 Modify trained model
+	# for i, (name, param) in enumerate(model.LSTM.named_parameters()):
+	# 	if name == "weight_hh_l0":
+	# 		print(param)
+
+	model.LSTM.weight_ih_l0.requires_grad = False
+	model.LSTM.bias_ih_l0.requires_grad = False
+
+	# model.LSTM.weight_hh_l0.requires_grad = False
+	# model.LSTM.bias_hh_l0.requires_grad = False
+
+	model.fc = nn.Linear(128, len(subcat_classes))
+
+	# 2.2 Update data
+	data = {"X_train": X_train, "X_test": X_test, "y_train": y_train_subcat, "y_test": y_test_subcat}	
+	train_loader, test_loader = get_dataloaders(data)
+
+	# 3.1 Train with fine labels
+	_, auc_score, macro_f1, counts, model, report, conf_mat = apply_NNs(subcat_classes, model, train_loader, test_loader, params)
 
 
 if __name__ == "__main__":
 	main()
+	# test_paper_1_approach()
+	# test_paper_2_approach()

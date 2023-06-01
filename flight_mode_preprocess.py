@@ -14,56 +14,56 @@ import utils
 
 
 mapped_subcat = {0:"manual mode (0)",
-                1:"altitude control mode (1)",
-                2:"position control mode (2)",
-                3:"mission mode (3)",
-                4:"loiter mode (4)",
-                5:"return to launch mode (5)",
-                6:"RC recovery (6)",
-                8:"free slot (8)",
-                9:"free slot (9)",
-                10:"acro mode (10)",
-                11:"free slot (11)",
-                12:"descend mode (no position control) (12)",
-                13:"termination mode (13)",
-                14:"offboard (14)",
-                15:"stabilized mode (15)",
-                16:"rattitude (16)",
-                17:"takeoff (17)",
-                18:"land (18)",
-                19:"follow (19)",
-                20:"precision land with landing target (20)",
-                21:"orbit in circle (21)",
-                22:"takeoff, transition, establish loiter (22)"}
+				1:"altitude control mode (1)",
+				2:"position control mode (2)",
+				3:"mission mode (3)",
+				4:"loiter mode (4)",
+				5:"return to launch mode (5)",
+				6:"RC recovery (6)",
+				8:"free slot (8)",
+				9:"free slot (9)",
+				10:"acro mode (10)",
+				11:"free slot (11)",
+				12:"descend mode (no position control) (12)",
+				13:"termination mode (13)",
+				14:"offboard (14)",
+				15:"stabilized mode (15)",
+				16:"rattitude (16)",
+				17:"takeoff (17)",
+				18:"land (18)",
+				19:"follow (19)",
+				20:"precision land with landing target (20)",
+				21:"orbit in circle (21)",
+				22:"takeoff, transition, establish loiter (22)"}
 
 mapped_cat = {"RC recovery (6)":"auto",
-                "manual mode (0)":"manual",
-                "altitude control mode (1)":"guided",
-                "position control mode (2)":"guided",
-                "mission mode (3)":"auto",
-                "loiter mode (4)":"auto",
-                "return to launch mode (5)":"auto",
-                "free slot (8)":"undefined",
-                "free slot (9)":"undefined",
-                "acro mode (10)":"guided",
-                "free slot (11)":"undefined",
-                "descend mode (no position control) (12)":"auto",
-                "termination mode (13)":"auto",
-                "offboard (14)": "auto",
-                "stabilized mode (15)":"guided",
-                "rattitude (16)":"guided",
-                "takeoff (17)":"auto",
-                "land (18)":"auto",
-                "follow (19)":"auto",
-                "precision land with landing target (20)":"auto",
-                "orbit in circle (21)":"guided",
-                    "takeoff, transition, establish loiter (22)":"auto"}
+				"manual mode (0)":"manual",
+				"altitude control mode (1)":"guided",
+				"position control mode (2)":"guided",
+				"mission mode (3)":"auto",
+				"loiter mode (4)":"auto",
+				"return to launch mode (5)":"auto",
+				"free slot (8)":"undefined",
+				"free slot (9)":"undefined",
+				"acro mode (10)":"guided",
+				"free slot (11)":"undefined",
+				"descend mode (no position control) (12)":"auto",
+				"termination mode (13)":"auto",
+				"offboard (14)": "auto",
+				"stabilized mode (15)":"guided",
+				"rattitude (16)":"guided",
+				"takeoff (17)":"auto",
+				"land (18)":"auto",
+				"follow (19)":"auto",
+				"precision land with landing target (20)":"auto",
+				"orbit in circle (21)":"guided",
+					"takeoff, transition, establish loiter (22)":"auto"}
 
 mapped_label = {"guided":0, "auto":1, "manual":2}            
 
-ulog_folder = "../../../../../../work/uav-ml/px4-Ulog-Parsers/dataDownloaded"
-ulog_folder_hex = "../../../../../../work/uav-ml/px4-Ulog-Parsers/dataDownloadedHex"
-json_file = "../../../../../../work/uav-ml/px4-Ulog-Parsers/MetaLogs.json"
+ulog_folder = "../../../../../../../work/uav-ml/px4-Ulog-Parsers/dataDownloaded"
+ulog_folder_hex = "../../../../../../../work/uav-ml/px4-Ulog-Parsers/dataDownloadedHex"
+json_file = "../../../../../../../work/uav-ml/px4-Ulog-Parsers/MetaLogs.json"
 
 
 
@@ -138,16 +138,25 @@ def extract_dfs(mUAV, table_name, feat_name):
 	return df
 
 def generate_data(feats):
-	
+	# Only ids that are quad and contain all the features
 	# with open("../../../../UAV_ML/full_parsed_7_multi.txt", "rb") as f:
 	# 	full_parsed_split = dp.split_features(pickle.load(f))
 	# 	temp_ids = list(full_parsed_split.keys())
 	# ids = [u for u in temp_ids if indexable_meta[u]["type"] == "Quadrotor"]
 	# print(f"subset size: {len(ids)}")
 
+	# Only ids that are quad
 	ids = get_filtered_ids()
 	ids = [u for u in ids if indexable_meta[u]["type"] == "Quadrotor"]
-	print(f"full size: {len(ids)}")
+
+	# Only ids that are quad and are the extra ids
+	# with open("new_mapped_X_xyz_extra.txt", "rb") as f:
+	# 	X_extra = pickle.load(f)	
+	# with open("extra_ids.txt", "rb") as f:
+	# 	extra_ids = pickle.load(f)
+	# print(len(extra_ids))
+	# ids = [value for value in extra_ids if len(X_extra[value]) > 0]
+
 
 	X = []
 	y = []
@@ -168,7 +177,6 @@ def generate_data(feats):
 		print(f"Success count: {success_count}")
 		print(id)
 
-		mapped_X[id] = {}
 
 		modes = []
 		data = {}
@@ -258,7 +266,7 @@ def get_equal_distribution(X, y, min_instances=1000):
 	return new_X, new_y
 
 
-def apply_dur_threshold(X, y):
+def apply_dur_threshold(X, y, is_added):
 	print(len(X))
 	total_mins = []
 	total_maxes = []
@@ -280,11 +288,21 @@ def apply_dur_threshold(X, y):
 	threshold_ind = [i for i, d in enumerate(durations) if d >= 10]
 	threshold_keys = list(np.array(keys)[threshold_ind])
 
+	extra_indices = []
+	for i, ind in enumerate(threshold_ind):
+		if is_added[ind] == 1:
+			extra_indices.append(i)
+
+	# with open("extra_indices.txt", "wb") as f:
+	# 	pickle.dump(extra_indices, f)
+
+
 
 	new_X = {}
 	for key in threshold_keys:
 
 		new_X[key] = X[key]
+
 
 	new_y = list(np.array(y)[threshold_ind])
 
@@ -312,45 +330,52 @@ def remap_y(y):
 	return new_y, new_mapping
 
 
-def extending_lists(mapped_X, mapped_y, feats):
-    X = {}
-    y = {}
-    y_list = []
-
-    for key, value in mapped_X.items():
-        counter = 0
-        for i, sample in enumerate(value):
-            if len(list(sample.keys())) == len(feats):
-                X[f"{key} | {counter}"] = sample
-                y[f"{key} | {counter}"] = mapped_y[key][i]
-                y_list.append(mapped_y[key][i])
-                counter += 1
+def extending_lists(mapped_X, mapped_y, feats, extra_ids):
+	X = {}
+	y = {}
+	y_list = []
+	is_added = []
 
 
-    return X, y, y_list
+
+	for key, value in mapped_X.items():
+		counter = 0
+		for i, sample in enumerate(value):
+			if len(list(sample.keys())) == len(feats):
+				X[f"{key} | {counter}"] = sample
+				y[f"{key} | {counter}"] = mapped_y[key][i]
+				y_list.append(mapped_y[key][i])
+
+				if key in extra_ids:
+					is_added.append(1)
+				else:
+					is_added.append(0)
+
+				counter += 1
+
+
+	return X, y, y_list, is_added
 	
 
-def preprocess_data(mapped_X, mapped_y, feats, equal_dist=False, chunking=False):
-	X, y, y_list = extending_lists(mapped_X, mapped_y, feats)
+def preprocess_data(mapped_X, mapped_y, feats, equal_dist=False, chunking=False, num_t_ints=50):
+	with open("extra_ids.txt", "rb") as f:
+		extra_ids = pickle.load(f)
 
-	X, y_list = apply_dur_threshold(X, y_list)
+	X, y, y_list, is_added = extending_lists(mapped_X, mapped_y, feats, extra_ids)
+	print(len(X))
+
+	X, y_list = apply_dur_threshold(X, y_list, is_added)
+	print(len(X))
 
 	if equal_dist:
 		X, y_list = get_equal_distribution(X, y_list)
-		# with open("new_mapping_X_equal.txt", "wb") as f:
-		# 	pickle.dump(X, f)
-
-		# with open("new_mapping_y_equal.txt", "wb") as f:
-		# 	pickle.dump(y_list, f)	
-		
-		# return	
 
 	if chunking:
 		X, ids_intervals, y_list = dp.get_x_min_chunks(X, y)
 
 	# X = {k: X[k] for k in list(X)[:100]}
 
-	new_X = dp.timestamp_bin(X)
+	new_X = dp.timestamp_bin(X, num_t_ints=num_t_ints)
 
 	new_y, new_mapping = remap_y(y_list)
 
@@ -359,6 +384,8 @@ def preprocess_data(mapped_X, mapped_y, feats, equal_dist=False, chunking=False)
 
 def standardize_data(X_train, X_test):
 	scaler = StandardScaler()
+
+	print(X_train.shape)
 
 	num_instances = X_train.shape[0]
 	num_features = X_train.shape[1]
@@ -389,49 +416,43 @@ def main():
 	#          "manual_control_setpoint | z", "vehicle_gps_position | alt", "battery_status | temperature"]
 
 	feats = ["vehicle_local_position | x", "vehicle_local_position | y",
-	         "vehicle_local_position | z"]
+			 "vehicle_local_position | z"]
+
 
 	# Generate mapped data
-	mapped_X, mapped_y = generate_data(feats)
+	# mapped_X, mapped_y = generate_data(feats)
+	
+	# identifier = "_xyz_extra.txt"
 
-	with open("new_mapped_X_xyz_extra.txt", "wb") as f:
-		pickle.dump(mapped_X, f)
+	# with open(f"new_mapped_X{identifier}", "wb") as f:
+	# 	pickle.dump(mapped_X, f)
 
-	with open("new_mapped_y_xyz_extra.txt", "wb") as f:
-		pickle.dump(mapped_y, f)
+	# with open(f"new_mapped_y{identifier}", "wb") as f:
+	# 	pickle.dump(mapped_y, f)
 
 
+	mapping_dir = "../experiment_xyz"
+	identifier = "_xyz_extra.txt"
 
 	# Preprocessing mapped data
-	with open("new_mapped_X_xyz_extra.txt", "rb") as f:
+	with open(os.path.join(mapping_dir, f"new_mapped_X{identifier}"), "rb") as f:
 		mapped_X = pickle.load(f)
 
-	with open("new_mapped_y_xyz_extra.txt", "rb") as f:
+	with open(os.path.join(mapping_dir, f"new_mapped_y{identifier}"), "rb") as f:
 		mapped_y = pickle.load(f)
 
-	new_X, new_y, new_mapping = preprocess_data(mapped_X, mapped_y, feats)
+	identifier = "_xyz_extra.txt"
 
-	with open("X_data_xyz_extra.txt", "wb") as f:
+	new_X, new_y, new_mapping = preprocess_data(mapped_X, mapped_y, feats, num_t_ints=50)
+
+	with open(f"X_data{identifier}", "wb") as f:
 		pickle.dump(new_X, f)
 
-	with open("y_data_xyz_extra.txt", "wb") as f:
+	with open(f"y_data{identifier}", "wb") as f:
 		pickle.dump(new_y, f)
 
-	with open("mapping_xyz_extra.txt", "wb") as f:
+	with open(f"mapping{identifier}", "wb") as f:
 		pickle.dump(new_mapping, f)
-
-	# Getting smaller dataset for analysis
-	# feats = ["vehicle_local_position | x", "vehicle_local_position | y",
-	#          "vehicle_local_position | z", "vehicle_attitude_setpoint | roll_body",
-	#          "vehicle_attitude_setpoint | pitch_body", "vehicle_attitude_setpoint | yaw_body",
-	#          "manual_control_setpoint | z", "vehicle_gps_position | alt", "battery_status | temperature"]
-	# with open("new_mapped_X.txt", "rb") as f:
-	# 	mapped_X = pickle.load(f)
-
-	# with open("new_mapped_y.txt", "rb") as f:
-	# 	mapped_y = pickle.load(f)
-
-	# new_X, new_y, new_mapping = preprocess_data(mapped_X, mapped_y, feats, equal_dist=True)
 
 
 if __name__ == "__main__":
